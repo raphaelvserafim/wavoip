@@ -1,60 +1,46 @@
-FROM ubuntu:22.04
+FROM node:18-bookworm
 
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install base dependencies
-RUN apt-get update && apt-get install -y \
-    wget curl gnupg2 software-properties-common \
-    cabextract xvfb unzip p7zip-full \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# Install Wine (stable)
+# Install Wine and audio support
 RUN dpkg --add-architecture i386 && \
-    mkdir -pm755 /etc/apt/keyrings && \
-    wget -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key && \
-    wget -NP /etc/apt/sources.list.d/ https://dl.winehq.org/wine-builds/ubuntu/dists/jammy/winehq-jammy.sources && \
     apt-get update && \
-    apt-get install -y --install-recommends winehq-stable && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+    apt-get install -y --no-install-recommends \
+      wine64 \
+      wine32 \
+      wget \
+      unzip \
+      xvfb \
+      ca-certificates \
+      pulseaudio \
+      alsa-utils \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install Node.js (Linux - for genQRCode and npm install)
-RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && \
-    apt-get install -y nodejs && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# Setup Wine prefix
-ENV WINEPREFIX=/root/.wine
+# Set Wine to 64-bit mode
 ENV WINEARCH=win64
+ENV WINEPREFIX=/root/.wine
 ENV DISPLAY=:99
-ENV WINEDEBUG=-all
 
-RUN Xvfb :99 -screen 0 1024x768x16 & \
-    sleep 2 && \
-    wineboot --init && \
-    wineserver --wait || true
+# Initialize Wine prefix and set Windows 10 mode
+RUN xvfb-run wineboot --init 2>/dev/null || true && \
+    wine64 reg add "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion" /v CurrentBuildNumber /t REG_SZ /d 19041 /f 2>/dev/null || true && \
+    wine64 reg add "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion" /v CurrentVersion /t REG_SZ /d 6.3 /f 2>/dev/null || true && \
+    wine64 reg add "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion" /v ProductName /t REG_SZ /d "Windows 10 Pro" /f 2>/dev/null || true
 
-# Download Electron v12.0.0-beta.31 Windows x64
-RUN wget -q -O /tmp/electron.zip \
-    "https://github.com/electron/electron/releases/download/v12.0.0-beta.31/electron-v12.0.0-beta.31-win32-x64.zip" && \
-    mkdir -p /opt/electron && \
-    cd /opt/electron && unzip -q /tmp/electron.zip && \
-    rm /tmp/electron.zip
+# Download Electron 12.2.3 for Windows x64 (NODE_MODULE_VERSION 87, required by wavoip.node)
+RUN mkdir -p /opt/electron && \
+    wget -L "https://registry.npmmirror.com/-/binary/electron/12.2.3/electron-v12.2.3-win32-x64.zip" \
+         -O /tmp/electron.zip && \
+    unzip -q /tmp/electron.zip -d /opt/electron && \
+    rm -f /tmp/electron.zip
 
 WORKDIR /app
 
-# Copy project files
-COPY wa-calls/ /app/
+COPY bridge-server.js /app/
+COPY wavoip.node /app/
 
-# Install dependencies
-RUN cd /app && npm install --ignore-scripts 2>/dev/null || true
+ENV PATH="/usr/lib/wine:${PATH}"
+ENV PORT=3500
 
-# Copy wavoip.node
-COPY wavoip.node /app/dist/wavoip.node
+EXPOSE ${PORT}
 
-# Entrypoint
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
-EXPOSE 3000
-
-CMD ["/entrypoint.sh"]
+# Start Xvfb + PulseAudio + Electron via Wine
+CMD ["sh", "-c", "Xvfb :99 -screen 0 1024x768x24 & pulseaudio --start --exit-idle-time=-1 2>/dev/null; sleep 2; ELECTRON_RUN_AS_NODE=1 /usr/lib/wine/wine64 /opt/electron/electron.exe /app/bridge-server.js"]
