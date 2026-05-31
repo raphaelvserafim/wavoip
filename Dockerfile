@@ -1,6 +1,6 @@
 FROM node:18-bookworm
 
-# Install Wine, audio support, and mingw for stub DLL
+# Install Wine and audio support
 RUN dpkg --add-architecture i386 && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -11,9 +11,7 @@ RUN dpkg --add-architecture i386 && \
       xvfb \
       ca-certificates \
       pulseaudio \
-      pulseaudio-utils \
       alsa-utils \
-      gcc-mingw-w64-x86-64 \
     && rm -rf /var/lib/apt/lists/*
 
 # Set Wine to 64-bit mode
@@ -27,16 +25,7 @@ RUN xvfb-run wineboot --init 2>/dev/null || true && \
     wine64 reg add "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion" /v CurrentVersion /t REG_SZ /d 6.3 /f 2>/dev/null || true && \
     wine64 reg add "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion" /v ProductName /t REG_SZ /d "Windows 10 Pro" /f 2>/dev/null || true
 
-WORKDIR /app
-
-# Copy stub DLL source and compile it
-COPY stub.c /tmp/stub.c
-RUN mkdir -p /root/.wine/drive_c/windows/system32 && \
-    x86_64-w64-mingw32-gcc -shared -o /root/.wine/drive_c/windows/system32/windows.devices.enumeration.dll \
-        /tmp/stub.c -Wl,--export-all-symbols -lkernel32 -lntdll && \
-    rm /tmp/stub.c
-
-# Replace winedbg with a no-op as fallback safety
+# Replace winedbg with a no-op so the background thread crash doesn't hang the process
 RUN mv /usr/lib/wine/x86_64-unix/winedbg.so /usr/lib/wine/x86_64-unix/winedbg.so.bak 2>/dev/null || true && \
     rm -f /root/.wine/drive_c/windows/system32/winedbg.exe 2>/dev/null || true && \
     echo '#!/bin/true' > /usr/bin/winedbg && chmod +x /usr/bin/winedbg
@@ -52,6 +41,8 @@ RUN mkdir -p /opt/electron && \
     unzip -q /tmp/electron.zip -d /opt/electron && \
     rm -f /tmp/electron.zip
 
+WORKDIR /app
+
 COPY bridge-server.js /app/
 COPY wavoip.node /app/
 
@@ -60,8 +51,6 @@ ENV PORT=8080
 
 EXPOSE ${PORT}
 
-# Use our native stub DLL for device enumeration
-ENV WINEDLLOVERRIDES="windows.devices.enumeration=n"
 ENV WINEDEBUG="-all"
 
 # Start Xvfb + PulseAudio + Electron via Wine
