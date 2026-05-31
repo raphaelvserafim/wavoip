@@ -1,0 +1,12 @@
+services:
+  wavoip:
+    build: .
+    container_name: wavoip
+    volumes:
+      - wavoip-auth:/app/auth_info_baileys
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
+volumes:
+  wavoip-auth:
