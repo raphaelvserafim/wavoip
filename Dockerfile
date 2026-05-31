@@ -28,8 +28,9 @@ RUN xvfb-run wineboot --init 2>/dev/null || true && \
 
 # Create stub DLL for windows.devices.enumeration to prevent page fault
 # wavoip.node internally calls DeviceInformation which is unimplemented in Wine.
-# This stub DLL returns NULL/E_NOTIMPL instead of crashing.
-RUN echo '#include <windows.h>' > /tmp/stub.c && \
+# This stub DLL loads without exporting anything useful, preventing a NULL deref crash.
+RUN mkdir -p /root/.wine/drive_c/windows/system32 && \
+    echo '#include <windows.h>' > /tmp/stub.c && \
     echo 'BOOL WINAPI DllMain(HINSTANCE h, DWORD r, LPVOID p) { return TRUE; }' >> /tmp/stub.c && \
     x86_64-w64-mingw32-gcc -shared -o /root/.wine/drive_c/windows/system32/windows.devices.enumeration.dll /tmp/stub.c -Wl,--export-all-symbols -nostdlib -lkernel32 && \
     rm /tmp/stub.c
