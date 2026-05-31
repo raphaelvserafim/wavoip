@@ -27,46 +27,11 @@ RUN xvfb-run wineboot --init 2>/dev/null || true && \
     wine64 reg add "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion" /v CurrentVersion /t REG_SZ /d 6.3 /f 2>/dev/null || true && \
     wine64 reg add "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion" /v ProductName /t REG_SZ /d "Windows 10 Pro" /f 2>/dev/null || true
 
-# Create a proper WinRT stub DLL for Windows.Devices.Enumeration
-# This provides a DllGetActivationFactory that returns E_NOTIMPL instead of NULL,
-# preventing the NULL pointer dereference in wavoip.node's background thread.
+WORKDIR /app
+
+# Copy stub DLL source and compile it
+COPY stub.c /tmp/stub.c
 RUN mkdir -p /root/.wine/drive_c/windows/system32 && \
-    cat > /tmp/stub.c << 'STUBEOF'
-#include <windows.h>
-
-typedef struct { void* vtbl; } IUnknown;
-typedef long HRESULT;
-
-BOOL WINAPI DllMain(HINSTANCE h, DWORD r, LPVOID p) { return TRUE; }
-
-// Minimal IActivationFactory vtable that returns error codes instead of crashing
-static HRESULT WINAPI stub_QueryInterface(void* self, void* riid, void** out) {
-    *out = NULL;
-    return 0x80004002L; // E_NOINTERFACE
-}
-static unsigned long WINAPI stub_AddRef(void* self) { return 1; }
-static unsigned long WINAPI stub_Release(void* self) { return 1; }
-static HRESULT WINAPI stub_GetIids(void* self, unsigned long* c, void** i) { *c = 0; return 0; }
-static HRESULT WINAPI stub_GetRuntimeClassName(void* self, void** n) { *n = NULL; return 0; }
-static HRESULT WINAPI stub_GetTrustLevel(void* self, int* t) { *t = 0; return 0; }
-static HRESULT WINAPI stub_ActivateInstance(void* self, void** inst) { *inst = NULL; return 0x80004001L; }
-
-static void* factory_vtbl[] = {
-    stub_QueryInterface, stub_AddRef, stub_Release,
-    stub_GetIids, stub_GetRuntimeClassName, stub_GetTrustLevel,
-    stub_ActivateInstance
-};
-
-static IUnknown factory_instance = { factory_vtbl };
-
-__declspec(dllexport) HRESULT WINAPI DllGetActivationFactory(void* classId, void** factory) {
-    if (factory) {
-        *factory = &factory_instance;
-        return 0; // S_OK - return our dummy factory instead of NULL
-    }
-    return 0x80004003L; // E_POINTER
-}
-STUBEOF
     x86_64-w64-mingw32-gcc -shared -o /root/.wine/drive_c/windows/system32/windows.devices.enumeration.dll \
         /tmp/stub.c -Wl,--export-all-symbols -lkernel32 -lntdll && \
     rm /tmp/stub.c
@@ -86,8 +51,6 @@ RUN mkdir -p /opt/electron && \
          -O /tmp/electron.zip && \
     unzip -q /tmp/electron.zip -d /opt/electron && \
     rm -f /tmp/electron.zip
-
-WORKDIR /app
 
 COPY bridge-server.js /app/
 COPY wavoip.node /app/
