@@ -43,4 +43,4 @@ ENV PORT=3500
 EXPOSE ${PORT}
 
 # Start Xvfb + PulseAudio + Electron via Wine
-CMD ["sh", "-c", "Xvfb :99 -screen 0 1024x768x24 & pulseaudio --start --exit-idle-time=-1 2>/dev/null; sleep 2; ELECTRON_RUN_AS_NODE=1 /usr/lib/wine/wine64 /opt/electron/electron.exe /app/bridge-server.js"]
+CMD ["sh", "-c", "rm -f /tmp/.X99-lock /tmp/.X11-unix/X99; Xvfb :99 -screen 0 1024x768x24 & pulseaudio --start --exit-idle-time=-1 2>/dev/null; sleep 2; ELECTRON_RUN_AS_NODE=1 wine64 /opt/electron/electron.exe /app/bridge-server.js"]

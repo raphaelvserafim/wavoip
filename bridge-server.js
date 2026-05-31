@@ -26,8 +26,23 @@
 const http = require('http');
 const net = require('net');
 
-// Wine doesn't support stderr properly, redirect all output to stdout
-const log = (...args) => process.stdout.write(args.join(' ') + '\n');
+// Wine/Electron doesn't have proper stdio pipes, so use fs.writeSync to fd 1 (stdout)
+// with a fallback to a log file if stdout isn't available either
+const fs = require('fs');
+let logFd;
+try {
+  fs.writeSync(1, '');
+  logFd = 1;
+} catch (e) {
+  logFd = fs.openSync('/app/bridge.log', 'a');
+}
+const log = (...args) => {
+  try {
+    fs.writeSync(logFd, args.join(' ') + '\n');
+  } catch (e) {
+    // silently ignore write errors
+  }
+};
 
 let wavoip;
 try {
