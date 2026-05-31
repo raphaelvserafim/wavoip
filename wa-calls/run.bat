@@ -1,1 +1,0 @@
-C:\Users\New\Downloads\electron-v12.0.0-beta.31-win32-x64\electron.exe ./dist/wavoip.js
