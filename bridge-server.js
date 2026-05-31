@@ -194,12 +194,11 @@ server.on('upgrade', (req, socket, head) => {
           });
           wavoip.updateNetworkMedium(2, 0);
           wavoip.setScreenSize(1920, 1080);
-          wavoip.updateAudioVideoSwitch(true);
 
-          // NOTE: Do NOT call selectAudio() or getAVDevices() here.
-          // They crash Wine with a page fault because
-          // Windows.Devices.Enumeration.DeviceInformation is not implemented.
-          // wavoip works fine for signaling without real audio device selection.
+          // NOTE: Do NOT call updateAudioVideoSwitch(), selectAudio(), or
+          // getAVDevices(). They trigger Windows.Devices.Enumeration which
+          // crashes Wine with a page fault (DeviceInformation not implemented).
+          // wavoip works for signaling without real audio device enumeration.
 
           initialized = true;
           sendToClient({ type: 'ready' });
