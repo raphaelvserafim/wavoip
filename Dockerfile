@@ -19,12 +19,23 @@ ENV WINEARCH=win64
 ENV WINEPREFIX=/root/.wine
 ENV DISPLAY=:99
 
-# Initialize Wine prefix, set Windows 10 mode, and configure crash handling
+# Initialize Wine prefix and set Windows 10 mode
 RUN xvfb-run wineboot --init 2>/dev/null || true && \
     wine64 reg add "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion" /v CurrentBuildNumber /t REG_SZ /d 19041 /f 2>/dev/null || true && \
     wine64 reg add "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion" /v CurrentVersion /t REG_SZ /d 6.3 /f 2>/dev/null || true && \
-    wine64 reg add "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion" /v ProductName /t REG_SZ /d "Windows 10 Pro" /f 2>/dev/null || true && \
-    wine64 reg add "HKCU\\Software\\Wine\\WineDbg" /v ShowCrashDialog /t REG_DWORD /d 0 /f 2>/dev/null || true
+    wine64 reg add "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion" /v ProductName /t REG_SZ /d "Windows 10 Pro" /f 2>/dev/null || true
+
+# Replace winedbg with a no-op so that when the background thread crashes
+# (DeviceInformation page fault), the process doesn't hang.
+# The crash only affects device enumeration - the main bridge thread is fine.
+RUN mv /usr/lib/wine/x86_64-unix/winedbg.so /usr/lib/wine/x86_64-unix/winedbg.so.bak 2>/dev/null || true && \
+    rm -f /root/.wine/drive_c/windows/system32/winedbg.exe 2>/dev/null || true && \
+    echo '#!/bin/true' > /usr/bin/winedbg && chmod +x /usr/bin/winedbg
+
+# Configure Wine to not show crash dialogs and auto-close on crash
+RUN xvfb-run wine64 reg add "HKCU\\Software\\Wine\\WineDbg" /v ShowCrashDialog /t REG_DWORD /d 0 /f 2>/dev/null || true && \
+    xvfb-run wine64 reg add "HKCU\\Software\\Wine\\WineDbg" /v AutoCloseOnCrash /t REG_DWORD /d 1 /f 2>/dev/null || true && \
+    xvfb-run wine64 reg add "HKLM\\Software\\Microsoft\\Windows\\Windows Error Reporting" /v DontShowUI /t REG_DWORD /d 1 /f 2>/dev/null || true
 
 # Download Electron 12.2.3 for Windows x64 (NODE_MODULE_VERSION 87, required by wavoip.node)
 RUN mkdir -p /opt/electron && \
@@ -43,14 +54,7 @@ ENV PORT=8080
 
 EXPOSE ${PORT}
 
-# Disable winedbg to prevent it from hanging the process when a background
-# thread crashes. wavoip.node has a background thread that tries to enumerate
-# Windows audio devices (DeviceInformation) which isn't implemented in Wine.
-# The init succeeds before this crash, so we just need the thread to die
-# silently instead of launching the debugger and freezing everything.
-ENV WINEDLLOVERRIDES="winedbg.exe=d"
-
-# Suppress noisy Wine debug output
+# Suppress Wine debug output
 ENV WINEDEBUG="-all"
 
 # Start Xvfb + PulseAudio + Electron via Wine
