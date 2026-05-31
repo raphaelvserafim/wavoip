@@ -23,24 +23,46 @@
  *   { type: "error", message: "..." }
  */
 
-const http = require('http');
-const net = require('net');
-
-// Wine/Electron doesn't have proper stdio pipes, so use fs.writeSync to fd 1 (stdout)
-// with a fallback to a log file if stdout isn't available either
+// Wine/Electron doesn't support stdio pipes (uv_pipe_open fails).
+// We must override stdout/stderr BEFORE anything tries to use them,
+// including internal Node.js error handlers that write to stderr.
 const fs = require('fs');
+const { Writable } = require('stream');
+
 let logFd;
 try {
   fs.writeSync(1, '');
   logFd = 1;
 } catch (e) {
-  logFd = fs.openSync('/app/bridge.log', 'a');
+  try {
+    logFd = fs.openSync('/app/bridge.log', 'a');
+  } catch (e2) {
+    logFd = null;
+  }
 }
+
+const noop = new Writable({ write(chunk, enc, cb) { cb(); } });
+const safeStream = logFd !== null
+  ? new Writable({
+      write(chunk, enc, cb) {
+        try { fs.writeSync(logFd, chunk); } catch (e) { /* ignore */ }
+        cb();
+      }
+    })
+  : noop;
+
+// Replace stdout and stderr with safe streams to prevent uv_pipe_open crashes
+Object.defineProperty(process, 'stdout', { value: safeStream, configurable: true });
+Object.defineProperty(process, 'stderr', { value: safeStream, configurable: true });
+
+const http = require('http');
+const net = require('net');
+
 const log = (...args) => {
   try {
-    fs.writeSync(logFd, args.join(' ') + '\n');
+    fs.writeSync(logFd || 1, args.join(' ') + '\n');
   } catch (e) {
-    // silently ignore write errors
+    // silently ignore
   }
 };
 
