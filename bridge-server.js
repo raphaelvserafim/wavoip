@@ -1,87 +1,32 @@
 /**
- * WaVoIP Bridge Server
+ * WaVoIP Bridge Server - Windows Native
  *
- * Runs inside Wine (Windows Node.js) to load wavoip.node natively.
- * Exposes a WebSocket server that our main app connects to.
+ * Roda direto no Windows com Node.js.
+ * Expoe WebSocket server pra o client conectar.
  *
- * Protocol: JSON messages over WebSocket
- *
- * From client -> bridge:
- *   { type: "init", jid: "5566..." }
- *   { type: "startCall", targetJid: "1437...", deviceJids: [...], callId: "...", isVideo: false }
- *   { type: "handleSignaling", data: {...} }
- *   { type: "handleOffer", data: {...} }
- *   { type: "handleAck", data: {...} }
- *   { type: "acceptCall", audio: true, video: false }
- *   { type: "endCall" }
- *
- * From bridge -> client:
- *   { type: "xmpp", callId: "...", from: "...", node: [...] }
- *   { type: "event", code: number, t: any, r: any }
- *   { type: "log", args: [...] }
- *   { type: "ready" }
- *   { type: "error", message: "..." }
+ * Uso: node bridge-server.js
+ * Ou com ngrok: ngrok http 3500
  */
 
-// Wine/Electron doesn't support stdio pipes (uv_pipe_open fails).
-// We must override stdout/stderr BEFORE anything tries to use them,
-// including internal Node.js error handlers that write to stderr.
-const fs = require('fs');
-const { Writable } = require('stream');
-
-let logFd;
-try {
-  fs.writeSync(1, '');
-  logFd = 1;
-} catch (e) {
-  try {
-    logFd = fs.openSync('/app/bridge.log', 'a');
-  } catch (e2) {
-    logFd = null;
-  }
-}
-
-const noop = new Writable({ write(chunk, enc, cb) { cb(); } });
-const safeStream = logFd !== null
-  ? new Writable({
-      write(chunk, enc, cb) {
-        try { fs.writeSync(logFd, chunk); } catch (e) { /* ignore */ }
-        cb();
-      }
-    })
-  : noop;
-
-// Replace stdout and stderr with safe streams to prevent uv_pipe_open crashes
-Object.defineProperty(process, 'stdout', { value: safeStream, configurable: true });
-Object.defineProperty(process, 'stderr', { value: safeStream, configurable: true });
-
 const http = require('http');
-const net = require('net');
+const crypto = require('crypto');
 
-const log = (...args) => {
-  try {
-    fs.writeSync(logFd || 1, args.join(' ') + '\n');
-  } catch (e) {
-    // silently ignore
-  }
-};
+const log = (...args) => console.log('[bridge]', ...args);
 
 let wavoip;
 try {
   wavoip = require('./wavoip.node');
-  log('[bridge] wavoip.node loaded successfully');
+  log('wavoip.node loaded successfully');
 } catch (err) {
-  log('[bridge] Failed to load wavoip.node:', err.message);
+  log('Failed to load wavoip.node:', err.message);
+  log('Make sure wavoip.node is in the same folder as this script');
   process.exit(1);
 }
 
-// Simple WebSocket server (minimal implementation to avoid npm deps)
 const server = http.createServer((req, res) => {
-  res.writeHead(200);
-  res.end('WaVoIP Bridge Server');
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('WaVoIP Bridge Server - OK');
 });
-
-const crypto = require('crypto');
 
 server.on('upgrade', (req, socket, head) => {
   const key = req.headers['sec-websocket-key'];
@@ -97,8 +42,7 @@ server.on('upgrade', (req, socket, head) => {
     `Sec-WebSocket-Accept: ${acceptKey}\r\n\r\n`
   );
 
-  log('[bridge] Client connected');
-
+  log('Client connected');
   let initialized = false;
 
   function sendToClient(obj) {
@@ -108,7 +52,7 @@ server.on('upgrade', (req, socket, head) => {
     let frame;
     if (len < 126) {
       frame = Buffer.alloc(2 + len);
-      frame[0] = 0x81; // text frame
+      frame[0] = 0x81;
       frame[1] = len;
       buf.copy(frame, 2);
     } else if (len < 65536) {
@@ -127,17 +71,14 @@ server.on('upgrade', (req, socket, head) => {
     socket.write(frame);
   }
 
-  // Parse WebSocket frames
   let buffer = Buffer.alloc(0);
   socket.on('data', (data) => {
     buffer = Buffer.concat([buffer, data]);
-
     while (buffer.length >= 2) {
       const secondByte = buffer[1];
       const masked = (secondByte & 0x80) !== 0;
       let payloadLen = secondByte & 0x7f;
       let offset = 2;
-
       if (payloadLen === 126) {
         if (buffer.length < 4) return;
         payloadLen = buffer.readUInt16BE(2);
@@ -147,15 +88,12 @@ server.on('upgrade', (req, socket, head) => {
         payloadLen = Number(buffer.readBigUInt64BE(2));
         offset = 10;
       }
-
       if (masked) {
         if (buffer.length < offset + 4 + payloadLen) return;
         const mask = buffer.slice(offset, offset + 4);
         offset += 4;
         const payload = buffer.slice(offset, offset + payloadLen);
-        for (let i = 0; i < payloadLen; i++) {
-          payload[i] ^= mask[i % 4];
-        }
+        for (let i = 0; i < payloadLen; i++) payload[i] ^= mask[i % 4];
         buffer = buffer.slice(offset + payloadLen);
         handleMessage(payload.toString('utf8'));
       } else {
@@ -169,80 +107,57 @@ server.on('upgrade', (req, socket, head) => {
 
   function handleMessage(raw) {
     let msg;
-    try {
-      msg = JSON.parse(raw);
-    } catch (e) {
-      log('[bridge] Invalid JSON:', raw);
-      return;
-    }
-
-    log('[bridge] Received:', msg.type);
+    try { msg = JSON.parse(raw); } catch (e) { return; }
+    log('Received:', msg.type);
 
     switch (msg.type) {
       case 'init':
         try {
           wavoip.init(msg.jid, true, true, true, false);
           wavoip.registerEventCallback((code, t, r) => {
-            log('[wavoip event]', code, JSON.stringify(t), JSON.stringify(r));
+            log('Event:', code);
             sendToClient({ type: 'event', code, t, r });
           });
           wavoip.registerSignalingXmppCallback((callId, from, node) => {
+            log('XMPP:', node[0], 'to:', from);
             sendToClient({ type: 'xmpp', callId, from, node });
           });
           wavoip.registerLoggingCallback((...args) => {
-            log('[wavoip log]', JSON.stringify(args));
+            // silent
           });
           wavoip.updateNetworkMedium(2, 0);
           wavoip.setScreenSize(1920, 1080);
-
-          // NOTE: Do NOT call updateAudioVideoSwitch(), selectAudio(), or
-          // getAVDevices(). They trigger Windows.Devices.Enumeration which
-          // crashes Wine with a page fault (DeviceInformation not implemented).
-          // wavoip works for signaling without real audio device enumeration.
-
+          wavoip.updateAudioVideoSwitch(true);
+          try {
+            wavoip.selectAudio('', '', function() {
+              log('Audio device selected');
+            });
+          } catch (e) {
+            log('selectAudio skipped:', e.message);
+          }
           initialized = true;
           sendToClient({ type: 'ready' });
-          log('[bridge] WaVoIP initialized for', msg.jid);
+          log('WaVoIP initialized for', msg.jid);
         } catch (err) {
           sendToClient({ type: 'error', message: err.message });
         }
         break;
 
       case 'startCall':
-        if (!initialized) {
-          sendToClient({ type: 'error', message: 'Not initialized' });
-          return;
-        }
+        if (!initialized) { sendToClient({ type: 'error', message: 'Not initialized' }); return; }
         try {
-          log('[bridge] startMD params:');
-          log('[bridge]   targetJid:', msg.targetJid);
-          log('[bridge]   deviceJids:', JSON.stringify(msg.deviceJids));
-          log('[bridge]   callId:', msg.callId);
-          log('[bridge]   isVideo:', msg.isVideo);
-
-          // List all wavoip functions available
-          log('[bridge] wavoip methods:', Object.keys(wavoip).join(', '));
-
-          wavoip.startMD(
-            msg.targetJid,
-            msg.deviceJids || [],
-            msg.callId,
-            msg.isVideo || false
-          );
-          log('[bridge] Call started to', msg.targetJid);
+          wavoip.startMD(msg.targetJid, msg.deviceJids || [], msg.callId, msg.isVideo || false);
+          log('Call started to', msg.targetJid);
         } catch (err) {
-          log('[bridge] startCall error:', err.message, err.stack);
+          log('startCall error:', err.message);
           sendToClient({ type: 'error', message: err.message });
         }
         break;
 
       case 'handleSignaling':
         if (!initialized) return;
-        try {
-          wavoip.handleIncomingSignalingMsg(msg.data);
-        } catch (err) {
-          sendToClient({ type: 'error', message: 'handleSignaling: ' + err.message });
-        }
+        try { wavoip.handleIncomingSignalingMsg(msg.data); }
+        catch (err) { sendToClient({ type: 'error', message: 'handleSignaling: ' + err.message }); }
         break;
 
       case 'handleOffer':
@@ -251,18 +166,13 @@ server.on('upgrade', (req, socket, head) => {
           wavoip.getNumParticipantsFromCallOffer(msg.data, (x) => {
             wavoip.handleIncomingSignalingOffer(msg.data, true, 5);
           });
-        } catch (err) {
-          sendToClient({ type: 'error', message: 'handleOffer: ' + err.message });
-        }
+        } catch (err) { sendToClient({ type: 'error', message: 'handleOffer: ' + err.message }); }
         break;
 
       case 'handleAck':
         if (!initialized) return;
-        try {
-          wavoip.handleIncomingSignalingAck(msg.data);
-        } catch (err) {
-          sendToClient({ type: 'error', message: 'handleAck: ' + err.message });
-        }
+        try { wavoip.handleIncomingSignalingAck(msg.data); }
+        catch (err) { sendToClient({ type: 'error', message: 'handleAck: ' + err.message }); }
         break;
 
       case 'acceptCall':
@@ -276,20 +186,20 @@ server.on('upgrade', (req, socket, head) => {
         break;
 
       default:
-        log('[bridge] Unknown message type:', msg.type);
+        log('Unknown:', msg.type);
     }
   }
 
-  socket.on('close', () => {
-    log('[bridge] Client disconnected');
-  });
-
-  socket.on('error', (err) => {
-    log('[bridge] Socket error:', err.message);
-  });
+  socket.on('close', () => log('Client disconnected'));
+  socket.on('error', (err) => log('Socket error:', err.message));
 });
 
 const PORT = process.env.PORT || 3500;
 server.listen(PORT, '0.0.0.0', () => {
-  log(`[bridge] WaVoIP bridge server listening on port ${PORT}`);
+  log(`Server listening on port ${PORT}`);
+  log(`Connect via: ws://localhost:${PORT}`);
+  log('');
+  log('Para expor na internet, rode em outro terminal:');
+  log('  npx localtunnel --port 3500');
+  log('  ou: ngrok http 3500');
 });
